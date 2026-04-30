@@ -1,0 +1,19 @@
+[project]
+name = "iclaude"
+version = "0.1.0"
+description = "Autonomous AI agent for iOS — Simulator and real devices via Appium"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "Pillow",
+]
+
+[project.scripts]
+simulator-agent = "simulator_agent.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["simulator_agent*"]

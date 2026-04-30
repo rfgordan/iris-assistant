@@ -32,6 +32,17 @@ iClaude supports two observation modes:
 - **Vision + Elements** (default) — takes a screenshot and reads the accessibility element tree. The agent gets exact element labels, types, and coordinates. More reliable.
 - **Vision-only** (`--vision-only`) — screenshot only, no element tree. The agent must interpret the image and estimate tap coordinates from pixels. Useful for benchmarking visual reasoning.
 
+## Agent
+
+The current agent implementation is a naive agentic loop: observe → send elements to Claude → parse action → execute → repeat. It calls the Anthropic API with task-specific instructions provided by the user.
+
+```bash
+# Write your instructions in a markdown file, then:
+python demos/trivia/run.py
+```
+
+See [demos/](./demos/) for examples.
+
 ## Demo
 
 Tested with [TriviaQuizApp](https://github.com/nealarch01/TriviaQuizApp) — a SwiftUI trivia game played fully autonomously.

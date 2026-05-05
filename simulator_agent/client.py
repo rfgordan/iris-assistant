@@ -21,6 +21,8 @@ class SimulatorClient:
         port: int = 4723,
         command_timeout: int = 600,
         scale_factor: int = 3,
+        xcode_org_id: str | None = None,
+        xcode_signing_id: str | None = None,
     ):
         self.udid = udid
         self.bundle_id = bundle_id
@@ -28,6 +30,8 @@ class SimulatorClient:
         self.port = port
         self.command_timeout = command_timeout
         self.scale_factor = scale_factor
+        self.xcode_org_id = xcode_org_id or os.environ.get("XCODE_ORG_ID")
+        self.xcode_signing_id = xcode_signing_id or os.environ.get("XCODE_SIGNING_ID", "iPhone Developer")
         self._base_url = f"http://{host}:{port}"
         self._session_id: str | None = None
         self._http = requests.Session()

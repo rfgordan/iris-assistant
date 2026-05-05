@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import subprocess
 import time
 
 import anthropic
@@ -68,88 +69,130 @@ def format_elements(obs: Observation) -> str:
     return "\n".join(lines)
 
 
+def _resolve_booted_udid() -> str | None:
+    """Get the UDID of the currently booted simulator."""
+    result = subprocess.run(
+        ["xcrun", "simctl", "list", "devices", "booted", "-j"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    import json as json_mod2
+    data = json_mod2.loads(result.stdout)
+    for runtime, devices in data.get("devices", {}).items():
+        for device in devices:
+            if device.get("state") == "Booted":
+                return device["udid"]
+    return None
+
+
+def ask_claude(
+    system_prompt: str,
+    user_message: str,
+    image_data: bytes | None = None,
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """Ask Claude for the next action via the Anthropic SDK."""
+    client = anthropic.Anthropic()
+    if image_data:
+        screenshot_b64 = base64.b64encode(image_data).decode()
+        user_content = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
+            {"type": "text", "text": user_message},
+        ]
+    else:
+        user_content = user_message
+
+    resp = client.messages.create(
+        model=model,
+        max_tokens=100,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return resp.content[0].text.strip()
+
+
+def _run_loop(client, instructions: str, vision_only: bool, max_steps: int):
+    """Core agent loop that works with any client (SimulatorClient or MirrorClient)."""
+    screen_size = client.get_screen_size()
+
+    if vision_only:
+        system_prompt = SYSTEM_VISION.format(
+            instructions=instructions,
+            width=screen_size[0],
+            height=screen_size[1],
+        )
+    else:
+        system_prompt = SYSTEM_ELEMENTS.format(instructions=instructions)
+
+    for step in range(1, max_steps + 1):
+        if vision_only:
+            screenshot = client.screenshot()
+            print(f"  [{step}/{max_steps}] observing (vision)...", end=" ", flush=True)
+            action = ask_claude(system_prompt, "What action should I take?", image_data=screenshot)
+        else:
+            obs = observe(client, vision_only=False)
+            elements_text = format_elements(obs)
+            print(f"  [{step}/{max_steps}] observing ({len(obs.elements or [])} elements)...", end=" ", flush=True)
+            action = ask_claude(system_prompt, f"Current screen elements:\n{elements_text}")
+
+        # Extract just the action line (Claude may add extra text)
+        for line in action.splitlines():
+            line = line.strip()
+            if re.match(r"(TAP|SWIPE|TYPE|DONE)\b", line, re.IGNORECASE):
+                action = line
+                break
+
+        print(f"-> {action}")
+
+        if action.strip().upper() == "DONE":
+            return True
+
+        tap_match = re.match(r"TAP\s+([\d.]+)[,\s]+([\d.]+)", action, re.IGNORECASE)
+        if tap_match:
+            client.tap(float(tap_match.group(1)), float(tap_match.group(2)))
+            time.sleep(0.3)
+            continue
+
+        swipe_match = re.match(r"SWIPE\s+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)", action, re.IGNORECASE)
+        if swipe_match:
+            client.swipe(
+                float(swipe_match.group(1)), float(swipe_match.group(2)),
+                float(swipe_match.group(3)), float(swipe_match.group(4)),
+            )
+            time.sleep(0.3)
+            continue
+
+        type_match = re.match(r"TYPE\s+(.+)", action, re.IGNORECASE)
+        if type_match:
+            client.type_text(type_match.group(1))
+            time.sleep(0.2)
+            continue
+
+        print(f"  [?] Unknown action: {action}")
+        break
+
+    return False
+
+
 def run(
     instructions: str,
     udid: str | None = None,
     bundle_id: str | None = None,
     vision_only: bool = False,
     max_steps: int = 50,
-    model: str = "claude-sonnet-4-20250514",
+    mirror: bool = False,
 ):
-    udid = udid or os.environ.get("SIMULATOR_UDID", "booted")
-    bundle_id = bundle_id or os.environ.get("SIMULATOR_BUNDLE_ID")
-    if not bundle_id:
-        raise ValueError("bundle_id is required (or set SIMULATOR_BUNDLE_ID)")
-
-    client_ai = anthropic.Anthropic()
-    history: list[dict] = []
-
-    with SimulatorClient(udid=udid, bundle_id=bundle_id) as sim:
-        screen_size = sim.get_screen_size()
-
-        if vision_only:
-            system_prompt = SYSTEM_VISION.format(
-                instructions=instructions,
-                width=screen_size[0],
-                height=screen_size[1],
-            )
-        else:
-            system_prompt = SYSTEM_ELEMENTS.format(instructions=instructions)
-
-        for step in range(1, max_steps + 1):
-            obs = observe(sim, vision_only=vision_only)
-
-            if vision_only:
-                print(f"\n--- Step {step} (vision-only) ---")
-                screenshot_b64 = base64.b64encode(obs.screenshot).decode()
-                user_content = [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
-                    {"type": "text", "text": "What action should I take?"},
-                ]
-            else:
-                elements_text = format_elements(obs)
-                print(f"\n--- Step {step} ---")
-                print(elements_text)
-                user_content = f"Current screen elements:\n{elements_text}"
-
-            history.append({"role": "user", "content": user_content})
-            resp = client_ai.messages.create(
-                model=model,
-                max_tokens=100,
-                system=system_prompt,
-                messages=history,
-            )
-            action = resp.content[0].text.strip()
-            history.append({"role": "assistant", "content": action})
-            print(f"Action: {action}")
-
-            if action.strip().upper() == "DONE":
-                print("\nGoal complete!")
-                return obs
-
-            tap_match = re.match(r"TAP\s+([\d.]+)\s+([\d.]+)", action, re.IGNORECASE)
-            if tap_match:
-                sim.tap(float(tap_match.group(1)), float(tap_match.group(2)))
-                time.sleep(1)
-                continue
-
-            swipe_match = re.match(r"SWIPE\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)", action, re.IGNORECASE)
-            if swipe_match:
-                sim.swipe(
-                    float(swipe_match.group(1)), float(swipe_match.group(2)),
-                    float(swipe_match.group(3)), float(swipe_match.group(4)),
-                )
-                time.sleep(1)
-                continue
-
-            type_match = re.match(r"TYPE\s+(.+)", action, re.IGNORECASE)
-            if type_match:
-                sim.type_text(type_match.group(1))
-                time.sleep(0.5)
-                continue
-
-            print(f"Unknown action: {action}")
-            break
-
-    print(f"\nReached max steps ({max_steps}).")
-    return None
+    if mirror:
+        from .mirror_client import MirrorClient
+        with MirrorClient() as client:
+            return _run_loop(client, instructions, vision_only=True, max_steps=max_steps)
+    else:
+        udid = udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
+        if not udid:
+            raise ValueError("No booted simulator found. Set SIMULATOR_UDID or boot a simulator.")
+        bundle_id = bundle_id or os.environ.get("SIMULATOR_BUNDLE_ID")
+        if not bundle_id:
+            raise ValueError("bundle_id is required (or set SIMULATOR_BUNDLE_ID)")
+        with SimulatorClient(udid=udid, bundle_id=bundle_id) as client:
+            return _run_loop(client, instructions, vision_only=vision_only, max_steps=max_steps)

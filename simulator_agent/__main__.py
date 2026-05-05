@@ -10,7 +10,11 @@ from .observation import observe, elements_to_json
 
 
 def _make_client(args) -> SimulatorClient:
-    udid = args.udid or os.environ.get("SIMULATOR_UDID", "booted")
+    from .agent import _resolve_booted_udid
+    udid = args.udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
+    if not udid:
+        print("Error: No booted simulator found. Use --udid or set SIMULATOR_UDID", file=sys.stderr)
+        sys.exit(1)
     bundle_id = args.bundle_id or os.environ.get("SIMULATOR_BUNDLE_ID")
     if not bundle_id:
         print("Error: --bundle-id or SIMULATOR_BUNDLE_ID is required", file=sys.stderr)
@@ -79,6 +83,44 @@ def cmd_observe(args):
             print("Elements: skipped (vision-only mode)")
 
 
+def cmd_run(args):
+    from pathlib import Path
+    from .agent import run
+
+    instructions_path = Path(args.instructions)
+    if not instructions_path.exists():
+        print(f"Error: {instructions_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    instructions = instructions_path.read_text()
+    if args.mirror:
+        mode = "mirror (vision-only)"
+        bundle = "iPhone Mirroring"
+    else:
+        mode = "vision-only" if args.vision_only else "elements"
+        bundle = args.bundle_id or os.environ.get("SIMULATOR_BUNDLE_ID", "?")
+
+    print()
+    print(f"  App:   {bundle}")
+    print(f"  Mode:  {mode}")
+    print(f"  Steps: {args.max_steps}")
+    print()
+
+    result = run(
+        instructions,
+        bundle_id=args.bundle_id or os.environ.get("SIMULATOR_BUNDLE_ID"),
+        vision_only=args.vision_only,
+        max_steps=args.max_steps,
+        mirror=args.mirror,
+    )
+
+    print()
+    if result:
+        print("  [OK] Done")
+    else:
+        print("  [FAIL] Did not finish")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="simulator-agent",
@@ -121,6 +163,13 @@ def main():
     p.add_argument("--vision-only", action="store_true", help="Skip element tree, screenshot only")
     p.add_argument("--output", "-o", help="Screenshot output path")
     p.set_defaults(func=cmd_observe)
+
+    p = sub.add_parser("run", help="Run the autonomous agent on an app")
+    p.add_argument("instructions", help="Path to instructions file (markdown)")
+    p.add_argument("--vision-only", action="store_true", help="Use screenshots only, no element tree")
+    p.add_argument("--mirror", action="store_true", help="Control real iPhone via iPhone Mirroring (vision-only)")
+    p.add_argument("--max-steps", type=int, default=50, help="Max agent steps")
+    p.set_defaults(func=cmd_run)
 
     args = parser.parse_args()
     args.func(args)

@@ -46,3 +46,7 @@ See [demos/](./demos/) for examples.
 ## Demo
 
 Tested with [TriviaQuizApp](https://github.com/nealarch01/TriviaQuizApp) — a SwiftUI trivia game played fully autonomously.
+
+## Credits
+
+`apps/TriviaQuizApp/` is vendored from [TriviaQuizApp](https://github.com/nealarch01/TriviaQuizApp) by Neal Archival, used under the MIT License. See [`apps/TriviaQuizApp/LICENSE`](./apps/TriviaQuizApp/LICENSE).

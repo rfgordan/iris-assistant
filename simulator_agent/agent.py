@@ -89,10 +89,11 @@ def _resolve_booted_udid() -> str | None:
 def ask_claude(
     system_prompt: str,
     user_message: str,
+    history: list[dict],
     image_data: bytes | None = None,
     model: str = "claude-sonnet-4-6",
 ) -> str:
-    """Ask Claude for the next action via the Anthropic SDK."""
+    """Ask Claude for the next action via the Anthropic SDK. Mutates history in place."""
     client = anthropic.Anthropic()
     if image_data:
         screenshot_b64 = base64.b64encode(image_data).decode()
@@ -103,13 +104,16 @@ def ask_claude(
     else:
         user_content = user_message
 
+    history.append({"role": "user", "content": user_content})
     resp = client.messages.create(
         model=model,
         max_tokens=100,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_content}],
+        messages=history,
     )
-    return resp.content[0].text.strip()
+    action = resp.content[0].text.strip()
+    history.append({"role": "assistant", "content": action})
+    return action
 
 
 def _run_loop(client, instructions: str, vision_only: bool, max_steps: int):
@@ -125,16 +129,18 @@ def _run_loop(client, instructions: str, vision_only: bool, max_steps: int):
     else:
         system_prompt = SYSTEM_ELEMENTS.format(instructions=instructions)
 
+    history: list[dict] = []
+
     for step in range(1, max_steps + 1):
         if vision_only:
             screenshot = client.screenshot()
             print(f"  [{step}/{max_steps}] observing (vision)...", end=" ", flush=True)
-            action = ask_claude(system_prompt, "What action should I take?", image_data=screenshot)
+            action = ask_claude(system_prompt, "What action should I take?", history, image_data=screenshot)
         else:
             obs = observe(client, vision_only=False)
             elements_text = format_elements(obs)
             print(f"  [{step}/{max_steps}] observing ({len(obs.elements or [])} elements)...", end=" ", flush=True)
-            action = ask_claude(system_prompt, f"Current screen elements:\n{elements_text}")
+            action = ask_claude(system_prompt, f"Current screen elements:\n{elements_text}", history)
 
         # Extract just the action line (Claude may add extra text)
         for line in action.splitlines():

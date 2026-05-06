@@ -9,7 +9,10 @@ from .coords import pixels_to_points
 from .observation import observe, elements_to_json
 
 
-def _make_client(args) -> SimulatorClient:
+def _make_client(args):
+    if getattr(args, "mirror", False):
+        from .mirror_client import MirrorClient
+        return MirrorClient()
     from .agent import _resolve_booted_udid
     udid = args.udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
     if not udid:
@@ -30,7 +33,9 @@ def _make_client(args) -> SimulatorClient:
 def cmd_screenshot(args):
     output = args.output or "/tmp/simulator_screenshot.png"
     with _make_client(args) as client:
-        client.screenshot_to_file(output)
+        png = client.screenshot()
+        with open(output, "wb") as f:
+            f.write(png)
     print(output)
 
 
@@ -55,7 +60,20 @@ def cmd_type(args):
     print(f"Typed: {args.text}")
 
 
+def cmd_scroll(args):
+    if not getattr(args, "mirror", False):
+        print("Error: 'scroll' currently requires --mirror.", file=sys.stderr)
+        sys.exit(1)
+    with _make_client(args) as client:
+        client.scroll(args.amount, x=args.x, y=args.y)
+    where = f" at ({args.x}, {args.y})" if args.x is not None else ""
+    print(f"Scrolled {args.amount}{where}")
+
+
 def cmd_source(args):
+    if getattr(args, "mirror", False):
+        print("Error: 'source' is not available in --mirror mode (no element tree).", file=sys.stderr)
+        sys.exit(1)
     with _make_client(args) as client:
         source = client.get_source()
         if args.format == "raw":
@@ -68,8 +86,9 @@ def cmd_source(args):
 
 def cmd_observe(args):
     output = args.output or "/tmp/simulator_observation.png"
+    vision_only = args.vision_only or getattr(args, "mirror", False)
     with _make_client(args) as client:
-        obs = observe(client, vision_only=args.vision_only)
+        obs = observe(client, vision_only=vision_only)
         with open(output, "wb") as f:
             f.write(obs.screenshot)
         print(f"Screenshot: {output}")
@@ -133,14 +152,18 @@ def main():
 
     sub = parser.add_subparsers(dest="command", required=True)
 
+    mirror_help = "Target the iPhone Mirroring window instead of the simulator"
+
     p = sub.add_parser("screenshot", help="Take a screenshot")
     p.add_argument("--output", "-o", help="Output file path")
+    p.add_argument("--mirror", action="store_true", help=mirror_help)
     p.set_defaults(func=cmd_screenshot)
 
     p = sub.add_parser("tap", help="Tap at coordinates")
     p.add_argument("x", type=float)
     p.add_argument("y", type=float)
-    p.add_argument("--pixels", action="store_true", help="Coordinates are in pixels (will convert to points)")
+    p.add_argument("--pixels", action="store_true", help="Coordinates are in pixels (will convert to points; simulator only)")
+    p.add_argument("--mirror", action="store_true", help=mirror_help)
     p.set_defaults(func=cmd_tap)
 
     p = sub.add_parser("swipe", help="Swipe between two points")
@@ -149,11 +172,20 @@ def main():
     p.add_argument("x2", type=float)
     p.add_argument("y2", type=float)
     p.add_argument("--duration", type=int, default=800, help="Duration in ms")
+    p.add_argument("--mirror", action="store_true", help=mirror_help)
     p.set_defaults(func=cmd_swipe)
 
     p = sub.add_parser("type", help="Type text")
     p.add_argument("text")
+    p.add_argument("--mirror", action="store_true", help=mirror_help)
     p.set_defaults(func=cmd_type)
+
+    p = sub.add_parser("scroll", help="Scroll content via the scroll wheel (mirror only)")
+    p.add_argument("amount", type=int, help="Scroll clicks; positive scrolls content down")
+    p.add_argument("-x", type=float, default=None, help="Optional iOS x coord to center the scroll over")
+    p.add_argument("-y", type=float, default=None, help="Optional iOS y coord to center the scroll over")
+    p.add_argument("--mirror", action="store_true", help=mirror_help + " (required)")
+    p.set_defaults(func=cmd_scroll)
 
     p = sub.add_parser("source", help="Get element tree")
     p.add_argument("--format", choices=["raw", "json"], default="json")
@@ -162,6 +194,7 @@ def main():
     p = sub.add_parser("observe", help="Take a full observation")
     p.add_argument("--vision-only", action="store_true", help="Skip element tree, screenshot only")
     p.add_argument("--output", "-o", help="Screenshot output path")
+    p.add_argument("--mirror", action="store_true", help=mirror_help + " (forces vision-only)")
     p.set_defaults(func=cmd_observe)
 
     p = sub.add_parser("run", help="Run the autonomous agent on an app")

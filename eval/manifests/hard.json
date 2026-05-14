@@ -1,0 +1,29 @@
+[
+  {
+    "name": "tap_in_order_sweep",
+    "scenario": "tap_in_order",
+    "prompt": "Tap the numbered blue circles in order: 1, then 2, then 3, and so on through the highest number. Wrong order fails the eval immediately. Take a fresh screenshot before each tap so you can confirm which circle is which.",
+    "app_timeout_s": 90,
+    "fixed": { "Size": 80, "FontSize": 28, "Seed": 1 },
+    "sweep": { "Count": [5, 8] }
+  },
+  {
+    "name": "find_odd_one_color",
+    "scenario": "find_odd_one",
+    "prompt": "Among the grid of similar blue circles, exactly one has a slightly different color. Tap that circle. You have one chance — examine the image carefully before tapping.",
+    "app_timeout_s": 60,
+    "fixed": { "GridSize": 4, "OddDim": "color", "Size": 60, "Seed": 3 },
+    "sweep": { "OddDelta": [0.10, 0.05, 0.03] }
+  },
+  {
+    "name": "count_then_tap_sweep",
+    "scenario": "count_then_tap",
+    "prompt": "Count the red circles in the scattered field. Then tap the numbered tile at the bottom matching that count. You have one chance.",
+    "app_timeout_s": 60,
+    "fixed": { "CircleSize": 40, "TileCount": 12, "Seed": 1 },
+    "sweep": {
+      "NumCircles": [12, 20],
+      "RedCount": [5, 9]
+    }
+  }
+]

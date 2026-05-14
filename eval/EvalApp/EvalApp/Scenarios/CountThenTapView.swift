@@ -47,6 +47,8 @@ struct CountThenTapView: View {
             let bottomBand: CGFloat = 110
             let fieldHeight = geo.size.height - bottomBand - 60
             let layout = layoutCircles(in: CGSize(width: geo.size.width, height: fieldHeight))
+            let tileW = geo.size.width / CGFloat(tileCount)
+            let tileY = geo.size.height - bottomBand / 2
 
             ZStack {
                 Color.white
@@ -56,33 +58,38 @@ struct CountThenTapView: View {
                         handleTap(at: loc, geo: geo, bottomBand: bottomBand)
                     }
 
-                // Field of circles
-                ForEach(0..<layout.count, id: \.self) { i in
-                    let (pos, isRed) = layout[i]
-                    Circle()
-                        .fill(isRed ? Color.red : Color(white: 0.6))
-                        .frame(width: circleSize, height: circleSize)
-                        .position(pos)
-                        .allowsHitTesting(false)
-                }
-
-                // Numbered tiles at bottom
-                let tileW = geo.size.width / CGFloat(tileCount)
-                let tileY = geo.size.height - bottomBand / 2
-                ForEach(0..<tileCount, id: \.self) { i in
-                    let cx = (CGFloat(i) + 0.5) * tileW
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.black.opacity(0.5), lineWidth: 1.5)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color(white: 0.95)))
-                            .frame(width: tileW - 6, height: 70)
-                        Text("\(i + 1)")
+                // All visuals drawn in a single non-interactive layer so
+                // hit-testing isn't blocked by stacked .position'd views.
+                Canvas { ctx, _ in
+                    // Circles
+                    for (pos, isRed) in layout {
+                        let rect = CGRect(
+                            x: pos.x - circleSize / 2,
+                            y: pos.y - circleSize / 2,
+                            width: circleSize, height: circleSize
+                        )
+                        ctx.fill(Path(ellipseIn: rect),
+                                 with: .color(isRed ? .red : Color(white: 0.6)))
+                    }
+                    // Tile backgrounds
+                    for i in 0..<tileCount {
+                        let cx = (CGFloat(i) + 0.5) * tileW
+                        let rect = CGRect(
+                            x: cx - (tileW - 6) / 2,
+                            y: tileY - 35,
+                            width: tileW - 6, height: 70
+                        )
+                        let path = Path(roundedRect: rect, cornerRadius: 8)
+                        ctx.fill(path, with: .color(Color(white: 0.95)))
+                        ctx.stroke(path, with: .color(.black.opacity(0.5)), lineWidth: 1.5)
+                        // Label
+                        let text = Text("\(i + 1)")
                             .font(.system(size: 22, weight: .semibold))
                             .foregroundColor(.black)
+                        ctx.draw(text, at: CGPoint(x: cx, y: tileY), anchor: .center)
                     }
-                    .position(x: cx, y: tileY)
-                    .allowsHitTesting(false)
                 }
+                .allowsHitTesting(false)
             }
         }
         .onAppear {

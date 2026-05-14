@@ -39,6 +39,12 @@ struct ScenarioRouter: View {
             ScrollThenTapView(config: config)
         case "multi_step_nav":
             MultiStepNavView(config: config)
+        case "tap_in_order":
+            TapInOrderView(config: config)
+        case "find_odd_one":
+            FindOddOneView(config: config)
+        case "count_then_tap":
+            CountThenTapView(config: config)
         default:
             UnknownScenarioView(name: config.scenario)
         }

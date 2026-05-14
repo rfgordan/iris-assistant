@@ -14,8 +14,9 @@ Agent modes (controlled by --agent):
                          in the outer session: the outer Claude reads the
                          scenario context, spawns a subagent with a prompt
                          like "Tap the red circle. Use simulator-agent CLI
-                         primitives.", and the subagent uses Bash to call
-                         `simulator-agent tap/screenshot/...`. No API key.
+                         primitives with --background.", and the subagent
+                         uses Bash to call `simulator-agent tap ... --background`
+                         / `screenshot --background` / etc. No API key.
     api                  Harness spawns `python -m simulator_agent run`
                          which uses the Anthropic SDK directly. Requires
                          ANTHROPIC_API_KEY. Useful for CI / unattended runs.
@@ -64,6 +65,7 @@ def _spawn_agent(prompt: str, max_steps: int) -> subprocess.Popen:
         [
             sys.executable, "-m", "simulator_agent", "run",
             str(prompt_path),
+            "--background",
             "--vision-only",
             "--max-steps", str(max_steps),
         ],
@@ -104,7 +106,12 @@ def run(
             print(f"  agent:    spawned via Anthropic SDK (pid={agent_proc.pid})")
         elif agent_mode == "subagent":
             print(f"  agent:    awaiting Claude Code subagent")
-            print(f"            prompt: {prompt!r}")
+            driver_prompt = (
+                f"{prompt} Use simulator-agent CLI primitives with the --background flag "
+                "(for example `simulator-agent tap x y --background`) so input is delivered "
+                "through CoreSimulator HID without desktop focus changes."
+            )
+            print(f"            prompt: {driver_prompt!r}")
         else:
             print("  agent:    none (smoke test, expect timeout)")
 
@@ -145,7 +152,7 @@ def main():
                         help="Outer wait; defaults to app-timeout + 10")
     parser.add_argument("--agent", choices=["subagent", "api", "none"], default="subagent",
                         help="subagent (default): outer Claude Code drives a subagent that calls simulator-agent CLI; "
-                             "api: spawn standalone agent via Anthropic SDK (needs ANTHROPIC_API_KEY); "
+                             "api: spawn standalone background-HID agent via Anthropic SDK (needs ANTHROPIC_API_KEY); "
                              "none: smoke-test the harness, expect timeout")
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--prompt", default="Tap the red circle.")

@@ -33,6 +33,12 @@ struct ScenarioRouter: View {
         switch config.scenario {
         case "tap_target":
             TapTargetView(config: config)
+        case "tap_with_distractors":
+            TapWithDistractorsView(config: config)
+        case "scroll_then_tap":
+            ScrollThenTapView(config: config)
+        case "multi_step_nav":
+            MultiStepNavView(config: config)
         default:
             UnknownScenarioView(name: config.scenario)
         }

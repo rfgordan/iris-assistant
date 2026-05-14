@@ -1,0 +1,17 @@
+[
+  {
+    "name": "smoke_tap_target",
+    "scenario": "tap_target",
+    "prompt": "Tap the red circle.",
+    "app_timeout_s": 6,
+    "fixed": {
+      "BgColor": "white",
+      "TargetColor": "red",
+      "PositionMode": "fixed"
+    },
+    "sweep": {
+      "Size": [80, 40],
+      "Seed": [1]
+    }
+  }
+]

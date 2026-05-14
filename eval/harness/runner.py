@@ -29,6 +29,7 @@ Agent modes (controlled by --agent):
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -37,6 +38,9 @@ from pathlib import Path
 
 from . import simctl
 from .log_listener import LogListener
+
+
+JSON_RESULT_PREFIX = "JSON_RESULT "
 
 
 DEFAULT_APP = Path(__file__).resolve().parents[1] / "EvalApp" / "build" / "EvalApp.app"
@@ -80,6 +84,7 @@ def run(
     prompt: str,
     timeout_s: float,
     max_steps: int,
+    json_result: bool = False,
 ) -> int:
     if not app_path.exists():
         print(f"ERR: {app_path} not found. Run `make build` in eval/EvalApp first.", file=sys.stderr)
@@ -129,10 +134,25 @@ def run(
         print()
         if result is None:
             print(f"  [TIMEOUT] no RESULT line in {timeout_s:.0f}s")
+            if json_result:
+                _emit_json_result(scenario_args, "timeout", None, elapsed)
             return 1
         print(f"  [{result.verdict.upper()}] {result}")
         print(f"  wall:     {elapsed:.1f}s")
+        if json_result:
+            _emit_json_result(scenario_args, result.verdict, result.fields, elapsed)
         return 0 if result.passed else 1
+
+
+def _emit_json_result(scenario_args: dict, verdict: str, fields: dict | None, wall_s: float) -> None:
+    payload = {
+        "verdict": verdict,
+        "scenario": scenario_args.get("Scenario", "unknown"),
+        "scenario_args": scenario_args,
+        "result_fields": fields or {},
+        "wall_s": round(wall_s, 2),
+    }
+    print(JSON_RESULT_PREFIX + json.dumps(payload, default=str))
 
 
 def main():
@@ -156,6 +176,10 @@ def main():
                              "none: smoke-test the harness, expect timeout")
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--prompt", default="Tap the red circle.")
+    parser.add_argument("--app-arg", action="append", default=[], metavar="KEY=VALUE",
+                        help="Extra launch arg forwarded as `-Key Value` to the app. Repeatable.")
+    parser.add_argument("--json-result", action="store_true",
+                        help="After the verdict block, emit a single JSON_RESULT line for machine parsing")
 
     args = parser.parse_args()
 
@@ -172,6 +196,13 @@ def main():
         scenario_args["TargetX"] = args.target_x
     if args.target_y is not None:
         scenario_args["TargetY"] = args.target_y
+    # Generic pass-through args override / extend the named ones.
+    for kv in args.app_arg:
+        if "=" not in kv:
+            print(f"ERR: --app-arg expects KEY=VALUE, got: {kv!r}", file=sys.stderr)
+            sys.exit(2)
+        k, v = kv.split("=", 1)
+        scenario_args[k] = v
 
     harness_timeout = args.harness_timeout_s
     if harness_timeout is None:
@@ -184,6 +215,7 @@ def main():
         prompt=args.prompt,
         timeout_s=harness_timeout,
         max_steps=args.max_steps,
+        json_result=args.json_result,
     )
     sys.exit(rc)
 

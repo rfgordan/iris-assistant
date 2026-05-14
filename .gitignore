@@ -6,3 +6,7 @@ build/
 .eggs/
 .DS_Store
 xcuserdata/
+# Claude Code session artifacts — keep hooks/settings, exclude everything else
+.claude/*
+!.claude/hooks/
+!.claude/settings.json

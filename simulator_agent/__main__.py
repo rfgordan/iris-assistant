@@ -13,6 +13,9 @@ def _make_client(args):
     if getattr(args, "mirror", False):
         from .mirror_client import MirrorClient
         return MirrorClient()
+    if getattr(args, "screen", False):
+        from .screen_client import SimulatorScreenClient
+        return SimulatorScreenClient(udid=args.udid or os.environ.get("SIMULATOR_UDID"))
     from .agent import _resolve_booted_udid
     udid = args.udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
     if not udid:
@@ -71,8 +74,8 @@ def cmd_scroll(args):
 
 
 def cmd_source(args):
-    if getattr(args, "mirror", False):
-        print("Error: 'source' is not available in --mirror mode (no element tree).", file=sys.stderr)
+    if getattr(args, "mirror", False) or getattr(args, "screen", False):
+        print("Error: 'source' is not available in --mirror/--screen mode (no element tree).", file=sys.stderr)
         sys.exit(1)
     with _make_client(args) as client:
         source = client.get_source()
@@ -86,7 +89,7 @@ def cmd_source(args):
 
 def cmd_observe(args):
     output = args.output or "/tmp/simulator_observation.png"
-    vision_only = args.vision_only or getattr(args, "mirror", False)
+    vision_only = args.vision_only or getattr(args, "mirror", False) or getattr(args, "screen", False)
     with _make_client(args) as client:
         obs = observe(client, vision_only=vision_only)
         with open(output, "wb") as f:
@@ -153,10 +156,14 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     mirror_help = "Target the iPhone Mirroring window instead of the simulator"
+    screen_help = ("Drive the booted simulator via pyautogui clicks on the "
+                   "Simulator.app window (no Appium/WDA). Required for SwiftUI "
+                   "apps on iOS 26+ where WDA taps don't reach gesture handlers.")
 
     p = sub.add_parser("screenshot", help="Take a screenshot")
     p.add_argument("--output", "-o", help="Output file path")
     p.add_argument("--mirror", action="store_true", help=mirror_help)
+    p.add_argument("--screen", action="store_true", help=screen_help)
     p.set_defaults(func=cmd_screenshot)
 
     p = sub.add_parser("tap", help="Tap at coordinates")
@@ -164,6 +171,7 @@ def main():
     p.add_argument("y", type=float)
     p.add_argument("--pixels", action="store_true", help="Coordinates are in pixels (will convert to points; simulator only)")
     p.add_argument("--mirror", action="store_true", help=mirror_help)
+    p.add_argument("--screen", action="store_true", help=screen_help)
     p.set_defaults(func=cmd_tap)
 
     p = sub.add_parser("swipe", help="Swipe between two points")
@@ -173,11 +181,13 @@ def main():
     p.add_argument("y2", type=float)
     p.add_argument("--duration", type=int, default=800, help="Duration in ms")
     p.add_argument("--mirror", action="store_true", help=mirror_help)
+    p.add_argument("--screen", action="store_true", help=screen_help)
     p.set_defaults(func=cmd_swipe)
 
     p = sub.add_parser("type", help="Type text")
     p.add_argument("text")
     p.add_argument("--mirror", action="store_true", help=mirror_help)
+    p.add_argument("--screen", action="store_true", help=screen_help)
     p.set_defaults(func=cmd_type)
 
     p = sub.add_parser("scroll", help="Scroll content via the scroll wheel (mirror only)")
@@ -195,6 +205,7 @@ def main():
     p.add_argument("--vision-only", action="store_true", help="Skip element tree, screenshot only")
     p.add_argument("--output", "-o", help="Screenshot output path")
     p.add_argument("--mirror", action="store_true", help=mirror_help + " (forces vision-only)")
+    p.add_argument("--screen", action="store_true", help=screen_help + " (forces vision-only)")
     p.set_defaults(func=cmd_observe)
 
     p = sub.add_parser("run", help="Run the autonomous agent on an app")

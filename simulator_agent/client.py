@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 
 import requests
 
@@ -109,10 +110,27 @@ class SimulatorClient:
         logger.info("Screenshot saved to %s", path)
 
     def tap(self, x: float, y: float):
+        # W3C Actions API (pointer down → short pause → pointer up). More
+        # reliable than `mobile: tap` — SwiftUI gestures don't always fire
+        # for the latter on recent iOS versions.
         self._request(
             "POST",
-            "/execute/sync",
-            json={"script": "mobile: tap", "args": [{"x": x, "y": y}]},
+            "/actions",
+            json={
+                "actions": [
+                    {
+                        "type": "pointer",
+                        "id": "finger1",
+                        "parameters": {"pointerType": "touch"},
+                        "actions": [
+                            {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y)},
+                            {"type": "pointerDown", "button": 0},
+                            {"type": "pause", "duration": 100},
+                            {"type": "pointerUp", "button": 0},
+                        ],
+                    }
+                ]
+            },
         )
 
     def swipe(

@@ -8,6 +8,24 @@ Use this instead of `SimulatorClient` (Appium/WDA) when:
     install/launch, log stream signals) but exercise the same vision +
     coordinate-translation stack the mirror-mode agent uses.
 
+Input model:
+  Tap/swipe/scroll briefly activate Simulator.app, then post mouse events
+  via pyautogui (which uses CGEventPost at the HID tap). Activation is
+  needed because pyautogui posts at the SESSION level, where events are
+  routed to the frontmost process at the click coords.
+
+  We tried bypassing focus with `CGEventPostToPid` directly targeted at the
+  Simulator process — that would have made input multi-sim-parallel-friendly
+  and avoided focus theft. The events were posted successfully but did not
+  reach SwiftUI gesture recognizers; the simulator (or AppKit) appears to
+  filter out events delivered through that path. Quartz helpers are kept
+  below for reference. A future attempt could explore: (a) HID-level event
+  injection via IOHIDPost, (b) accessibility APIs (AXUIElementPerformAction)
+  targeted at sim windows, or (c) a private Apple framework like SyntheticUI.
+
+  Typing requires focus regardless of method — keystrokes always go to the
+  app with keyboard focus.
+
 Coordinates everywhere are in **iOS points** (e.g. 402×874 for iPhone 17 Pro).
 Screenshots are returned at full device pixel resolution (via `simctl io`).
 """
@@ -21,6 +39,7 @@ import subprocess
 import time
 
 import pyautogui
+import Quartz
 
 
 _TITLE_BAR = 28  # macOS Simulator window title bar height in px.
@@ -80,6 +99,47 @@ def _device_points(name: str) -> tuple[int, int]:
     )
 
 
+# --- Quartz CGEventPostToPid helpers (kept for reference) -----------------
+# These were intended to bypass macOS focus-routing by posting events
+# directly to the Simulator.app process. In practice, events posted via
+# CGEventPostToPid did not reach SwiftUI gesture recognizers — they appear
+# to be filtered out somewhere between the per-process tap and the iOS
+# touch dispatcher. Left here for the next attempt at focus-free input.
+def _simulator_pid() -> int:
+    proc = subprocess.run(["pgrep", "-x", "Simulator"], capture_output=True, text=True)
+    pids = [int(p) for p in proc.stdout.split()]
+    if not pids:
+        raise RuntimeError("Simulator.app is not running.")
+    return pids[0]
+
+
+def _quartz_post_mouse(pid: int, event_type, x: float, y: float) -> None:
+    event = Quartz.CGEventCreateMouseEvent(
+        None, event_type, (x, y), Quartz.kCGMouseButtonLeft
+    )
+    Quartz.CGEventPostToPid(pid, event)
+
+
+def _quartz_click(pid: int, x: float, y: float, hold_ms: int = 50) -> None:
+    _quartz_post_mouse(pid, Quartz.kCGEventLeftMouseDown, x, y)
+    time.sleep(hold_ms / 1000.0)
+    _quartz_post_mouse(pid, Quartz.kCGEventLeftMouseUp, x, y)
+
+
+def _quartz_drag(pid: int, sx: float, sy: float, ex: float, ey: float, duration_s: float) -> None:
+    duration_s = max(0.05, duration_s)
+    steps = max(8, int(duration_s * 60))
+    _quartz_post_mouse(pid, Quartz.kCGEventLeftMouseDown, sx, sy)
+    dt = duration_s / steps
+    for i in range(1, steps + 1):
+        t = i / steps
+        x = sx + (ex - sx) * t
+        y = sy + (ey - sy) * t
+        _quartz_post_mouse(pid, Quartz.kCGEventLeftMouseDragged, x, y)
+        time.sleep(dt)
+    _quartz_post_mouse(pid, Quartz.kCGEventLeftMouseUp, ex, ey)
+
+
 def _sim_window_geometry() -> tuple[int, int, int, int]:
     """Return (x, y, w, h) of Simulator.app's window 1 in macOS screen pixels."""
     pos = _osascript(
@@ -106,6 +166,7 @@ class SimulatorScreenClient:
         self._device_name: str = ""
         self._device_pts: tuple[int, int] = (0, 0)
         self._window: tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._sim_pid: int = 0
 
     def __enter__(self):
         self.connect()
@@ -120,11 +181,11 @@ class SimulatorScreenClient:
         else:
             _, self._device_name = _booted_device()
         self._device_pts = _device_points(self._device_name)
-        # Intentionally do NOT activate Simulator.app — that would steal focus
-        # from the user's foreground work. pyautogui clicks route by absolute
-        # screen coords, so they reach the simulator window as long as it
-        # isn't fully obscured. Caller must keep the simulator visible (but
-        # not necessarily focused).
+        self._sim_pid = _simulator_pid()
+        # connect() doesn't activate. Each input method activates before
+        # sending — pyautogui events are session-level and would otherwise
+        # land on whatever's frontmost at the click coords. See the module
+        # docstring for the focus-free-injection follow-up.
         self._window = _sim_window_geometry()
 
     def _refresh_window(self):
@@ -158,8 +219,17 @@ class SimulatorScreenClient:
             raise RuntimeError(f"simctl screenshot failed: {proc.stderr.decode(errors='replace')}")
         return proc.stdout
 
+    def _activate_simulator(self):
+        """Bring Simulator.app to the front so pyautogui events land on it."""
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Simulator" to activate'],
+            capture_output=True,
+        )
+        time.sleep(0.1)
+
     def tap(self, x: float, y: float):
         self._refresh_window()
+        self._activate_simulator()
         ax, ay = self._abs(x, y)
         pyautogui.click(ax, ay)
 
@@ -172,21 +242,52 @@ class SimulatorScreenClient:
         duration_ms: int = 500,
     ):
         self._refresh_window()
+        self._activate_simulator()
         sx, sy = self._abs(start_x, start_y)
         ex, ey = self._abs(end_x, end_y)
         pyautogui.moveTo(sx, sy)
         pyautogui.dragTo(ex, ey, duration=duration_ms / 1000.0, button="left")
 
+    def scroll(self, amount: int, x: float | None = None, y: float | None = None):
+        """Scroll content by simulating a swipe. macOS scroll-wheel events
+        don't translate to iOS scrolls, so we use a vertical drag.
+
+        Sign convention matches scroll wheels:
+          amount > 0  → reveal content below (swipe up)
+          amount < 0  → reveal content above (swipe down)
+
+        Each "click" is roughly 30 points of swipe distance. Pass (x, y) in
+        iOS points to center the swipe over a specific scrollable region.
+        """
+        self._refresh_window()
+        self._activate_simulator()
+        dw, dh = self._device_pts
+        cx = x if x is not None else dw / 2
+        cy = y if y is not None else dh / 2
+
+        per_click = 30
+        distance = max(40, min(dh - 100, abs(amount) * per_click))
+        half = distance / 2
+
+        if amount > 0:
+            start = (cx, cy + half)
+            end = (cx, cy - half)
+        else:
+            start = (cx, cy - half)
+            end = (cx, cy + half)
+
+        sx, sy = self._abs(start[0], start[1])
+        ex, ey = self._abs(end[0], end[1])
+        pyautogui.moveTo(sx, sy)
+        # 0.18s: short enough to register as a flick with momentum, long
+        # enough that iOS treats it as a swipe rather than a multi-tap.
+        pyautogui.dragTo(ex, ey, duration=0.18, button="left")
+
     def type_text(self, text: str):
         self._refresh_window()
-        # Typing genuinely needs keyboard focus — pyautogui.typewrite sends
-        # keystrokes to whatever app has focus, so we steal it here.
-        # Tap-only scenarios stay focus-preserving.
-        subprocess.run(
-            ["osascript", "-e", 'tell application "Simulator" to activate'],
-            capture_output=True,
-        )
-        time.sleep(0.1)
+        # Typing needs keyboard focus — pyautogui.typewrite sends keystrokes
+        # to whatever app has focus.
+        self._activate_simulator()
         pyautogui.typewrite(text, interval=0.02)
 
     def get_source(self) -> str:

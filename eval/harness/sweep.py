@@ -136,16 +136,18 @@ def _print_summary(results: list[dict]) -> None:
     for name, rs in groups.items():
         passed = sum(1 for r in rs if r["verdict"] == "pass")
         total = len(rs)
-        print(f"  {name}: {passed}/{total} pass")
-        # Per-cell line
+        group_tokens = sum((r.get("subagent") or {}).get("total_tokens", 0) for r in rs)
+        token_part = f"  tokens={group_tokens:,}" if group_tokens else ""
+        print(f"  {name}: {passed}/{total} pass{token_part}")
         for r in rs:
             verdict = r["verdict"]
             cell_str = " ".join(f"{k}={v}" for k, v in r["cell"].items())
-            extras = ""
             rf = r.get("result_fields") or {}
-            if verdict != "pass" and rf.get("reason"):
-                extras = f"  reason={rf['reason']}"
-            print(f"    [{verdict:>5}] {cell_str}{extras}  wall={r['wall_s']}s")
+            extras = f"  reason={rf['reason']}" if verdict != "pass" and rf.get("reason") else ""
+            sub = r.get("subagent") or {}
+            tok = f"  tokens={sub['total_tokens']:,}" if "total_tokens" in sub else ""
+            tu = f" tools={sub['tool_uses']}" if "tool_uses" in sub else ""
+            print(f"    [{verdict:>5}] {cell_str}{extras}  wall={r['wall_s']}s{tok}{tu}")
 
 
 def main():

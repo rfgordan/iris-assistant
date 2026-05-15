@@ -105,6 +105,13 @@ def _run_cell(
     cell_label = f"{group['name']}[{cell_idx + 1}/{total_cells}]"
     print(f"\n=== {cell_label}  {cell} ===")
     if agent_mode == "subagent":
+        # NOTE for any coding agent driving this: spawn the subagent NOW and
+        # wait for it to return before letting this script advance to the
+        # next cell. The subprocess.run call below blocks for up to TimeoutS
+        # — once it returns, the next cell launches a fresh app and the
+        # window of opportunity for the prior subagent is gone. Running the
+        # sweep continuously while spawning subagents async produces infra
+        # failures, not model signal. See eval/CLAUDE.md.
         print(f"READY: spawn a subagent now to handle this cell. Prompt: {group.get('prompt')!r}")
     start = time.monotonic()
     proc = subprocess.run(argv, capture_output=True, text=True)

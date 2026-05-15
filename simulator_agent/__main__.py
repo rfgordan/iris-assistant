@@ -18,10 +18,16 @@ def _make_client(args):
         return BackgroundSimulatorClient(udid=args.udid or os.environ.get("SIMULATOR_UDID"))
     if getattr(args, "screen_ff", False):
         from .focus_free_client import FocusFreeScreenClient
-        return FocusFreeScreenClient(udid=args.udid or os.environ.get("SIMULATOR_UDID"))
+        return FocusFreeScreenClient(
+            udid=args.udid or os.environ.get("SIMULATOR_UDID"),
+            screenshot_source=getattr(args, "screenshot_source", "window"),
+        )
     if getattr(args, "screen", False):
         from .screen_client import SimulatorScreenClient
-        return SimulatorScreenClient(udid=args.udid or os.environ.get("SIMULATOR_UDID"))
+        return SimulatorScreenClient(
+            udid=args.udid or os.environ.get("SIMULATOR_UDID"),
+            screenshot_source=getattr(args, "screenshot_source", "window"),
+        )
     from .agent import _resolve_booted_udid
     udid = args.udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
     if not udid:
@@ -168,6 +174,7 @@ def cmd_run(args):
         screen=args.screen,
         screen_ff=args.screen_ff,
         background=args.background,
+        screenshot_source=getattr(args, "screenshot_source", "window"),
     )
 
     print()
@@ -208,6 +215,17 @@ def main():
     p.add_argument("--screen", action="store_true", help=screen_help)
     p.add_argument("--screen-ff", action="store_true", help=screen_ff_help)
     p.add_argument("--background", action="store_true", help=background_help)
+    p.add_argument(
+        "--screenshot-source", choices=["window", "framebuffer"], default="window",
+        help=(
+            "Source for --screen/--screen-ff screenshots. "
+            "'window' (default): pyautogui capture of the Simulator window — "
+            "matches MirrorClient's pipeline so eval observations are mirror-representative. "
+            "'framebuffer': `simctl io screenshot` straight from CoreSimulator — "
+            "pristine and focus-free, but not mirror-representative. "
+            "Ignored for --mirror and --background."
+        ),
+    )
     p.set_defaults(func=cmd_screenshot)
 
     p = sub.add_parser("tap", help="Tap at coordinates")
@@ -261,6 +279,10 @@ def main():
     p.add_argument("--screen", action="store_true", help=screen_help + " (forces vision-only)")
     p.add_argument("--screen-ff", action="store_true", help=screen_ff_help + " (forces vision-only)")
     p.add_argument("--background", action="store_true", help=background_help)
+    p.add_argument(
+        "--screenshot-source", choices=["window", "framebuffer"], default="window",
+        help="Screenshot source for --screen/--screen-ff (see `screenshot --help`).",
+    )
     p.set_defaults(func=cmd_observe)
 
     p = sub.add_parser("run", help="Run the autonomous agent on an app")
@@ -270,6 +292,10 @@ def main():
     p.add_argument("--screen", action="store_true", help=screen_help + " (forces vision-only)")
     p.add_argument("--screen-ff", action="store_true", help=screen_ff_help + " (forces vision-only)")
     p.add_argument("--background", action="store_true", help=background_help)
+    p.add_argument(
+        "--screenshot-source", choices=["window", "framebuffer"], default="window",
+        help="Screenshot source for --screen/--screen-ff (see `screenshot --help`).",
+    )
     p.add_argument("--max-steps", type=int, default=50, help="Max agent steps")
     p.set_defaults(func=cmd_run)
 

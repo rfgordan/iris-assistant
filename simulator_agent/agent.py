@@ -191,6 +191,7 @@ def run(
     screen: bool = False,
     screen_ff: bool = False,
     background: bool = False,
+    screenshot_source: str = "window",
 ):
     if mirror:
         from .mirror_client import MirrorClient
@@ -208,14 +209,14 @@ def run(
         udid = udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
         if not udid:
             raise ValueError("No booted simulator found. Set SIMULATOR_UDID or boot a simulator.")
-        with FocusFreeScreenClient(udid=udid) as client:
+        with FocusFreeScreenClient(udid=udid, screenshot_source=screenshot_source) as client:
             return _run_loop(client, instructions, vision_only=True, max_steps=max_steps)
     elif screen:
         from .screen_client import SimulatorScreenClient
         udid = udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()
         if not udid:
             raise ValueError("No booted simulator found. Set SIMULATOR_UDID or boot a simulator.")
-        with SimulatorScreenClient(udid=udid) as client:
+        with SimulatorScreenClient(udid=udid, screenshot_source=screenshot_source) as client:
             return _run_loop(client, instructions, vision_only=True, max_steps=max_steps)
     else:
         udid = udid or os.environ.get("SIMULATOR_UDID") or _resolve_booted_udid()

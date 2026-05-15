@@ -1,0 +1,34 @@
+[
+  {
+    "name": "menu_toggle_off",
+    "scenario": "menu_toggle_off",
+    "prompt": "In the iOS Settings-style menu, navigate to Privacy > Tracking > 'Allow Apps to Request to Track' and turn that switch OFF. Touching any other switch fails immediately.",
+    "app_timeout_s": 120,
+    "fixed": {"TargetPath": "Privacy/Tracking/Allow Apps to Request to Track", "Seed": 1},
+    "sweep": {}
+  },
+  {
+    "name": "spotlight_search",
+    "scenario": "spotlight_search",
+    "prompt": "Tap the small Search pill at the bottom of the screen, type 'wea', then tap the Weather result.",
+    "app_timeout_s": 90,
+    "fixed": {"ItemCount": 40, "TargetName": "Weather", "MinQueryLength": 3, "Seed": 1},
+    "sweep": {}
+  },
+  {
+    "name": "scroll_find_message",
+    "scenario": "scroll_find_message",
+    "prompt": "In the Messages-style list, scroll until you find 'Sarah Chen' (NOT 'Sara Chen' or 'Sarah Cohen'). Tap her row, type exactly 'On my way' into the message field, then tap the send button.",
+    "app_timeout_s": 180,
+    "fixed": {"Count": 30, "TargetName": "Sarah Chen", "RequiredMessage": "On my way", "Confusable": "true", "Seed": 1},
+    "sweep": {}
+  },
+  {
+    "name": "swipe_pages_find",
+    "scenario": "swipe_pages_find",
+    "prompt": "Swipe horizontally through the pages of app icons until you find 'Weather', then tap it. The page indicator dots at the bottom are decorative — only horizontal swipes change pages.",
+    "app_timeout_s": 120,
+    "fixed": {"PageCount": 4, "IconsPerPage": 24, "TargetLabel": "Weather", "TargetPage": 3, "Seed": 1},
+    "sweep": {}
+  }
+]

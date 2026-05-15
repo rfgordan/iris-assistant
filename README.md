@@ -51,7 +51,7 @@ Tested with [TriviaQuizApp](https://github.com/nealarch01/TriviaQuizApp) — a S
 
 Parameterized scoring loop under [`eval/`](./eval/). A purpose-built SwiftUI app (`EvalApp`) renders one scenario per launch with knobs for difficulty (target size, position, distractors, etc.) and emits structured `RESULT pass|fail` lines via `os_log`. A Python harness installs the app, launches it with scenario args, and waits for the result.
 
-The **default agent mode is `subagent`** — meaning the outer Claude Code session is expected to spawn a subagent that drives the simulator through the `simulator-agent` CLI primitives (`tap`, `screenshot`, `swipe`, …). No `ANTHROPIC_API_KEY` is needed; Claude Code's existing credentials handle the model calls.
+The **default agent mode is `subagent`** — meaning the outer Claude Code session is expected to spawn a subagent that drives the simulator through the `simulator-agent` CLI primitives (`tap`, `screenshot`, `swipe`, …). Use the `--background` flag on simulator commands so input is delivered through CoreSimulator HID without stealing desktop focus. No `ANTHROPIC_API_KEY` is needed; Claude Code's existing credentials handle the model calls.
 
 ```bash
 # Build the app once (rebuild whenever Swift sources change).
@@ -91,8 +91,8 @@ flowchart TB
     %% ── Path A: subagent (default) ───────────────────────────────
     subgraph PathA["Path A — --agent subagent (default)"]
         Sub[Subagent<br/>spawned via Agent tool]
-        CLI[simulator-agent --screen]
-        Screen[SimulatorScreenClient<br/>simctl io + pyautogui]
+        CLI[simulator-agent ... --background]
+        Screen[BackgroundSimulatorClient<br/>simctl io + SimulatorKit HID]
     end
 
     %% ── Path B: api (fallback) ───────────────────────────────────
@@ -116,7 +116,7 @@ flowchart TB
     CC -. spawns when --agent subagent .-> Sub
     Sub -->|Bash| CLI
     CLI --> Screen
-    Screen -->|macOS click on<br/>Simulator window| EvalApp
+    Screen -->|CoreSimulator HID<br/>no desktop focus change| EvalApp
 
     %% Path B wiring
     Runner -. spawns when --agent api .-> SARun
@@ -131,8 +131,8 @@ flowchart TB
 **Key flows on the diagram:**
 
 - The **harness/signal loop** (Runner → Sctl → EvalApp → OSLog → LogListener → Runner) is shared by both paths. The agent's job is only to deliver the right tap; the verdict is decided by the app and observed by the harness.
-- **Path A** is the default: an outer Claude Code session spawns a subagent (no API key required), which uses `simulator-agent --screen` to click directly on the Simulator.app window via `pyautogui`. This bypasses WDA entirely.
-- **Path B** is the fallback: the harness spawns a standalone `simulator_agent run` that calls the Anthropic SDK. It currently goes through Appium/WDA, which on iOS 26 returns 200 OK for taps but the touches never reach SwiftUI's gesture handlers (the dashed red edge). For SwiftUI eval targets, point Path B at `--screen` too.
+- **Path A** is the default: an outer Claude Code session spawns a subagent (no API key required), which uses `simulator-agent ... --background` to send input through CoreSimulator HID. This bypasses WDA and does not activate Simulator.app, so desktop focus stays with your other work while evals run.
+- **Path B** is the fallback: the harness spawns a standalone `simulator_agent run` that calls the Anthropic SDK. For SwiftUI eval targets, the harness now passes `--background` so taps go through the same focus-free HID path instead of Appium/WDA.
 
 ## Credits
 

@@ -112,9 +112,13 @@ def run(
         elif agent_mode == "subagent":
             print(f"  agent:    awaiting Claude Code subagent")
             driver_prompt = (
-                f"{prompt} Use simulator-agent CLI primitives with the --background flag "
-                "(for example `simulator-agent tap x y --background`) so input is delivered "
-                "through CoreSimulator HID without desktop focus changes."
+                f"{prompt} Use simulator-agent CLI primitives with the --screen flag "
+                "(for example `simulator-agent tap x y --screen`) so input goes through "
+                "the macOS window server — the same substrate iPhone Mirroring uses. "
+                "Prefer `scroll` over `swipe` for any scrolling: scroll-wheel events round-trip "
+                "to iOS swipe-scrolls on both simulator and mirror, while mouse drags only "
+                "work on simulator. Take a screenshot first (`simulator-agent screenshot "
+                "--screen -o /tmp/shot.png`) before deciding coordinates."
             )
             print(f"            prompt: {driver_prompt!r}")
         else:

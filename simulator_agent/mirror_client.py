@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import io
-import statistics
 import subprocess
 import time
 
 import pyautogui
 from PIL import Image
+
+from .window_chrome import detect_ios_surface
 
 
 _TITLE_BAR = 28
@@ -32,60 +33,10 @@ def _get_mirror_window() -> tuple[int, int, int, int]:
     return parts[0], parts[1], parts[2], parts[3]
 
 
-def _detect_chrome_insets(img: Image.Image, max_inset: int = 30) -> tuple[int, int, int, int]:
-    """Find the chrome→content boundary (L, T, R, B) by gradient analysis.
-
-    On each side, scan many rows/columns and find the location of the largest
-    luminance drop within `max_inset` pixels; take the median across samples.
-    Robust to varying iOS content. Returns (0, 0, 0, 0) if no clear boundary.
-    """
-    img = img.convert("RGB")
-    px = img.load()
-    w, h = img.size
-
-    def lum(p: tuple[int, int, int]) -> float:
-        return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
-
-    def biggest_drop(values: list[float], min_drop: float = 30.0) -> int:
-        if len(values) < 2:
-            return 0
-        drops = [values[i - 1] - values[i] for i in range(1, len(values))]
-        d = max(drops)
-        if d < min_drop:
-            return 0
-        return drops.index(d) + 1
-
-    def median_or_zero(xs: list[int]) -> int:
-        return int(statistics.median(xs)) if xs else 0
-
-    sample_step = 8
-    lefts: list[int] = []
-    rights: list[int] = []
-    tops: list[int] = []
-    bottoms: list[int] = []
-
-    for y in range(20, h - 20, sample_step):
-        i = biggest_drop([lum(px[x, y]) for x in range(max_inset)])
-        if i:
-            lefts.append(i)
-        i = biggest_drop([lum(px[w - 1 - x, y]) for x in range(max_inset)])
-        if i:
-            rights.append(i)
-
-    for x in range(20, w - 20, sample_step):
-        i = biggest_drop([lum(px[x, y]) for y in range(max_inset)])
-        if i:
-            tops.append(i)
-        i = biggest_drop([lum(px[x, h - 1 - y]) for y in range(max_inset)])
-        if i:
-            bottoms.append(i)
-
-    return (
-        median_or_zero(lefts),
-        median_or_zero(tops),
-        median_or_zero(rights),
-        median_or_zero(bottoms),
-    )
+# Chrome detection lives in window_chrome.detect_ios_surface so the same
+# principled algorithm handles both the iPhone Mirroring window (light chrome
+# → iOS content) and the Simulator window (window bg → device bezel → iOS
+# content). See window_chrome.py for the algorithm.
 
 
 class MirrorClient:
@@ -113,7 +64,7 @@ class MirrorClient:
         # Calibrate chrome insets from a fresh screenshot. Keep self._inset at
         # (0,0,0,0) for this capture so we get the raw window content.
         raw_png = self._capture_png()
-        self._inset = _detect_chrome_insets(Image.open(io.BytesIO(raw_png)))
+        self._inset = detect_ios_surface(Image.open(io.BytesIO(raw_png)))
 
     def _refresh_window(self):
         """Re-read window position. Insets stay cached (size hasn't changed)."""
@@ -122,7 +73,7 @@ class MirrorClient:
             # Window resized — insets may be stale. Recalibrate.
             self._window = new
             raw_png = self._capture_png_raw()
-            self._inset = _detect_chrome_insets(Image.open(io.BytesIO(raw_png)))
+            self._inset = detect_ios_surface(Image.open(io.BytesIO(raw_png)))
         else:
             self._window = new
 

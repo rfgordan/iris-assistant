@@ -40,10 +40,19 @@ import time
 
 import pyautogui
 import Quartz
+from PIL import Image as _PILImage
+
+from .window_chrome import detect_ios_surface
 
 
 _TITLE_BAR = 28  # macOS Simulator window title bar height in px.
 _DEFAULT_DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer"
+
+# Sleep after every state-changing action so the act → observe loop has the
+# same temporal contract as MirrorClient. Mirror has ~200–500ms of encode/IPC
+# lag before the next captured frame reflects the action; sim is naturally
+# faster, so we slow it down to keep the agent's planner behavior comparable.
+_POST_ACTION_SETTLE_S = 0.35
 
 # (width_pt, height_pt) for known device types. Add entries as needed; or
 # override at runtime via `SIMULATOR_DEVICE_POINTS=widthxheight` env var.
@@ -159,14 +168,38 @@ def _sim_window_geometry() -> tuple[int, int, int, int]:
 
 class SimulatorScreenClient:
     """Same surface as SimulatorClient, but taps land via the macOS window
-    instead of WDA — required for SwiftUI on iOS 26 simulators."""
+    instead of WDA — required for SwiftUI on iOS 26 simulators.
 
-    def __init__(self, udid: str | None = None):
+    screenshot_source controls how `screenshot()` produces bytes:
+      "window"      — pyautogui capture of the Simulator.app window. Same
+                      pipeline MirrorClient uses, so eval observations
+                      match what an agent would see on real-iPhone mirror.
+                      Requires the Simulator window to be visible and not
+                      occluded; we activate it on connect to ensure that.
+      "framebuffer" — `simctl io screenshot`. Pristine device-resolution
+                      PNG straight from CoreSimulator. Works regardless
+                      of window state or focus — useful for unattended /
+                      CI runs where the Mac may be doing other things.
+                      Less mirror-representative.
+    """
+
+    def __init__(self, udid: str | None = None, screenshot_source: str = "window"):
+        if screenshot_source not in ("window", "framebuffer"):
+            raise ValueError(
+                f"screenshot_source must be 'window' or 'framebuffer', got {screenshot_source!r}"
+            )
         self._udid = udid
         self._device_name: str = ""
         self._device_pts: tuple[int, int] = (0, 0)
         self._window: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._sim_pid: int = 0
+        self._screenshot_source = screenshot_source
+        # (left, top, right, bottom) pixel insets that locate the iOS surface
+        # inside the macOS window-content (the window minus the title bar).
+        # The Simulator renders the iOS device with a device bezel inset on
+        # all sides — without these, taps land 30–60pt off vertically because
+        # the coordinate translation assumes iOS fills the whole window.
+        self._insets: tuple[int, int, int, int] = (0, 0, 0, 0)
 
     def __enter__(self):
         self.connect()
@@ -182,26 +215,68 @@ class SimulatorScreenClient:
             _, self._device_name = _booted_device()
         self._device_pts = _device_points(self._device_name)
         self._sim_pid = _simulator_pid()
-        # connect() doesn't activate. Each input method activates before
-        # sending — pyautogui events are session-level and would otherwise
-        # land on whatever's frontmost at the click coords. See the module
-        # docstring for the focus-free-injection follow-up.
+        # Always activate Simulator at connect so the chrome-detection
+        # capture grabs the right window pixels — without it the capture
+        # may include an overlapping app. The activate also matters for
+        # window-source screenshots later.
+        self._activate_simulator()
         self._window = _sim_window_geometry()
+        # Calibrate iOS-surface insets so input coords land correctly.
+        self._calibrate_insets()
 
     def _refresh_window(self):
-        self._window = _sim_window_geometry()
+        new = _sim_window_geometry()
+        # Re-calibrate if the window resized; otherwise insets are still valid.
+        if new[2:] != self._window[2:] and new[2] > 0:
+            self._window = new
+            # Cheap re-calibration. Guard against running during a capture
+            # that's already in flight by gating on framebuffer-mode if set.
+            self._calibrate_insets()
+        else:
+            self._window = new
+
+    def _calibrate_insets(self) -> None:
+        """Capture the Simulator window once and detect where the iOS
+        surface sits inside it. Run at connect and on window resize.
+
+        Uses pyautogui to grab the window-content region (window minus
+        title bar) and runs the generic detector. The same approach works
+        for MirrorClient against the iPhone Mirroring window — different
+        window, same detector.
+        """
+        wx, wy, ww, wh = self._window
+        if ww <= 0 or wh <= _TITLE_BAR:
+            return
+        region = (wx, wy + _TITLE_BAR, ww, wh - _TITLE_BAR)
+        try:
+            img = pyautogui.screenshot(region=region)
+            self._insets = detect_ios_surface(img)
+        except Exception:
+            # Detection is best-effort; on failure fall back to zero insets
+            # (legacy behavior). The eval surface a wrong-tap rather than
+            # crashing the whole agent.
+            self._insets = (0, 0, 0, 0)
 
     def _scale(self) -> tuple[float, float]:
-        """macOS pixels per iOS point, horizontally and vertically."""
+        """macOS pixels per iOS point, horizontally and vertically.
+
+        Accounts for the chrome insets that locate the iOS surface inside
+        the macOS window. Without insets the math implicitly stretches the
+        iOS frame across the full window and taps land 30–60pt off vertically.
+        """
         _, _, ww, wh = self._window
         dw, dh = self._device_pts
-        return ww / dw, (wh - _TITLE_BAR) / dh
+        il, it, ir, ib = self._insets
+        ios_w_px = max(1, ww - il - ir)
+        ios_h_px = max(1, (wh - _TITLE_BAR) - it - ib)
+        return ios_w_px / dw, ios_h_px / dh
 
     def _abs(self, x: float, y: float) -> tuple[int, int]:
         """Convert iOS-point coords to absolute macOS screen pixel coords."""
         wx, wy, _, _ = self._window
+        il, it, _, _ = self._insets
         sx, sy = self._scale()
-        return int(wx + x * sx), int(wy + _TITLE_BAR + y * sy)
+        return int(wx + il + x * sx), int(wy + _TITLE_BAR + it + y * sy)
 
     # --- public surface (matches SimulatorClient/MirrorClient) ---
 
@@ -209,7 +284,24 @@ class SimulatorScreenClient:
         return self._device_pts
 
     def screenshot(self) -> bytes:
-        """Full device-pixel-resolution PNG via `simctl io screenshot`."""
+        """Capture the screen as PNG bytes via the configured source.
+
+        See the class docstring for the framebuffer-vs-window trade-off.
+        """
+        if self._screenshot_source == "framebuffer":
+            return self._screenshot_framebuffer()
+        return self._screenshot_window()
+
+    def _screenshot_window(self) -> bytes:
+        self._refresh_window()
+        wx, wy, ww, wh = self._window
+        region = (wx, wy + _TITLE_BAR, ww, wh - _TITLE_BAR)
+        img = pyautogui.screenshot(region=region)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def _screenshot_framebuffer(self) -> bytes:
         proc = subprocess.run(
             ["xcrun", "simctl", "io", self._udid, "screenshot", "-"],
             env=_env(),
@@ -232,6 +324,7 @@ class SimulatorScreenClient:
         self._activate_simulator()
         ax, ay = self._abs(x, y)
         pyautogui.click(ax, ay)
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def swipe(
         self,
@@ -247,17 +340,22 @@ class SimulatorScreenClient:
         ex, ey = self._abs(end_x, end_y)
         pyautogui.moveTo(sx, sy)
         pyautogui.dragTo(ex, ey, duration=duration_ms / 1000.0, button="left")
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def scroll(self, amount: int, x: float | None = None, y: float | None = None):
-        """Scroll content by simulating a swipe. macOS scroll-wheel events
-        don't translate to iOS scrolls, so we use a vertical drag.
+        """Scroll content via a vertical drag (NOT scroll-wheel).
 
-        Sign convention matches scroll wheels:
+        The iOS Simulator does NOT translate macOS scroll-wheel events into
+        iOS scrolls — only drag gestures register as scrolling. MirrorClient
+        uses scroll-wheel because iPhone Mirroring filters drags but accepts
+        wheel; on simulator, the substrate is reversed. There's no single
+        scroll mechanism that's identical across both targets.
+
+        Sign convention (matches scroll wheels):
           amount > 0  → reveal content below (swipe up)
           amount < 0  → reveal content above (swipe down)
 
-        Each "click" is roughly 30 points of swipe distance. Pass (x, y) in
-        iOS points to center the swipe over a specific scrollable region.
+        Each "click" is roughly 30 points of swipe distance.
         """
         self._refresh_window()
         self._activate_simulator()
@@ -265,8 +363,8 @@ class SimulatorScreenClient:
         cx = x if x is not None else dw / 2
         cy = y if y is not None else dh / 2
 
-        per_click = 30
-        distance = max(40, min(dh - 100, abs(amount) * per_click))
+        per_click = 50
+        distance = max(60, min(dh - 100, abs(amount) * per_click))
         half = distance / 2
 
         if amount > 0:
@@ -279,9 +377,14 @@ class SimulatorScreenClient:
         sx, sy = self._abs(start[0], start[1])
         ex, ey = self._abs(end[0], end[1])
         pyautogui.moveTo(sx, sy)
-        # 0.18s: short enough to register as a flick with momentum, long
-        # enough that iOS treats it as a swipe rather than a multi-tap.
-        pyautogui.dragTo(ex, ey, duration=0.18, button="left")
+        # Duration scaled to distance so velocity stays around 600–800 pt/s.
+        # Above ~1000 pt/s the iOS Simulator treats the drag as a too-fast
+        # flick and ignores it; below ~300 pt/s it works but feels slow.
+        # 0.18s flat ignores ignores 50% of scroll calls. Verified by
+        # comparing scroll vs `swipe` (which uses 0.8s for 600pt).
+        drag_duration = max(0.4, distance / 700.0)
+        pyautogui.dragTo(ex, ey, duration=drag_duration, button="left")
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def type_text(self, text: str):
         self._refresh_window()
@@ -289,6 +392,7 @@ class SimulatorScreenClient:
         # to whatever app has focus.
         self._activate_simulator()
         pyautogui.typewrite(text, interval=0.02)
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def get_source(self) -> str:
         raise NotImplementedError(

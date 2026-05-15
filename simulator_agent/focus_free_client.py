@@ -49,6 +49,18 @@ flash; their working app returns. Multi-sim sweeps still serialize on
 focus (only one app can be frontmost at a time), but each operation is
 bounded — no permanent focus theft.
 
+## 2026-05-15: pre-activation now explicit
+
+While retesting on iOS 26.3, the `sess_target_pid_restored` strategy
+silently stopped delivering events when Simulator wasn't already
+frontmost — `handleTap` never fired. Adding an explicit
+`activate Simulator → sleep 150ms → dispatch → restore prev` sequence
+fixes it. The previous implementation relied on the click-to-front
+side effect of a PID-targeted event to bring Simulator forward, which
+is no longer happening reliably on the current macOS state. Whether
+that's a permission, a Mac-state, or a macOS-policy change isn't fully
+diagnosed — but the explicit-activate fix is robust either way.
+
 ## What didn't work, with notes
 
 - `CGEventPostToPid` alone (3 variants): events arrive in the target's
@@ -90,12 +102,16 @@ import subprocess
 import time
 from typing import Literal
 
+import pyautogui
 import Quartz
+
+from .window_chrome import detect_ios_surface
 
 
 # Reuse helpers from screen_client; minimal duplication.
 from .screen_client import (
     _TITLE_BAR,
+    _POST_ACTION_SETTLE_S,
     _env,
     _booted_device,
     _device_points,
@@ -233,13 +249,26 @@ class FocusFreeScreenClient:
             c.tap(201, 451)
     """
 
-    def __init__(self, udid: str | None = None, strategy: Strategy = "sess_target_pid_restored"):
+    def __init__(
+        self,
+        udid: str | None = None,
+        strategy: Strategy = "sess_target_pid_restored",
+        screenshot_source: str = "window",
+    ):
+        if screenshot_source not in ("window", "framebuffer"):
+            raise ValueError(
+                f"screenshot_source must be 'window' or 'framebuffer', got {screenshot_source!r}"
+            )
         self._udid = udid
         self._device_name: str = ""
         self._device_pts: tuple[int, int] = (0, 0)
         self._window: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._sim_pid: int = 0
         self.strategy: Strategy = strategy
+        self._screenshot_source = screenshot_source
+        # iOS-surface insets inside the macOS window-content (window minus
+        # title bar). See SimulatorScreenClient for rationale.
+        self._insets: tuple[int, int, int, int] = (0, 0, 0, 0)
 
     def __enter__(self):
         self.connect()
@@ -255,20 +284,49 @@ class FocusFreeScreenClient:
             _, self._device_name = _booted_device()
         self._device_pts = _device_points(self._device_name)
         self._sim_pid = _simulator_pid()
+        # Activate briefly so the calibration capture grabs Simulator pixels,
+        # then restore previous frontmost — preserves the focus-free promise.
+        prev = _frontmost_app()
+        if prev != "Simulator":
+            _activate_app("Simulator")
+            time.sleep(0.15)
         self._window = _sim_window_geometry()
+        self._calibrate_insets()
+        if prev and prev != "Simulator":
+            _activate_app(prev)
 
     def _refresh_window(self):
-        self._window = _sim_window_geometry()
+        new = _sim_window_geometry()
+        if new[2:] != self._window[2:] and new[2] > 0:
+            self._window = new
+            self._calibrate_insets()
+        else:
+            self._window = new
+
+    def _calibrate_insets(self) -> None:
+        wx, wy, ww, wh = self._window
+        if ww <= 0 or wh <= _TITLE_BAR:
+            return
+        region = (wx, wy + _TITLE_BAR, ww, wh - _TITLE_BAR)
+        try:
+            img = pyautogui.screenshot(region=region)
+            self._insets = detect_ios_surface(img)
+        except Exception:
+            self._insets = (0, 0, 0, 0)
 
     def _scale(self) -> tuple[float, float]:
         _, _, ww, wh = self._window
         dw, dh = self._device_pts
-        return ww / dw, (wh - _TITLE_BAR) / dh
+        il, it, ir, ib = self._insets
+        ios_w_px = max(1, ww - il - ir)
+        ios_h_px = max(1, (wh - _TITLE_BAR) - it - ib)
+        return ios_w_px / dw, ios_h_px / dh
 
     def _abs(self, x: float, y: float) -> tuple[int, int]:
         wx, wy, _, _ = self._window
+        il, it, _, _ = self._insets
         sx, sy = self._scale()
-        return int(wx + x * sx), int(wy + _TITLE_BAR + y * sy)
+        return int(wx + il + x * sx), int(wy + _TITLE_BAR + it + y * sy)
 
     # ── public surface ──
 
@@ -276,6 +334,34 @@ class FocusFreeScreenClient:
         return self._device_pts
 
     def screenshot(self) -> bytes:
+        """Capture the screen as PNG bytes via the configured source.
+
+        "window": briefly activates Simulator, captures the window pixels
+        via pyautogui (matches MirrorClient — mirror-representative), then
+        restores the previously frontmost app.
+        "framebuffer": `simctl io screenshot`. Truly focus-free; ideal for
+        unattended runs. Less mirror-representative.
+        """
+        if self._screenshot_source == "framebuffer":
+            return self._screenshot_framebuffer()
+        return self._screenshot_window()
+
+    def _screenshot_window(self) -> bytes:
+        self._refresh_window()
+        prev = _frontmost_app()
+        _activate_app("Simulator")
+        # Wait for the window to actually be raised before grabbing pixels.
+        time.sleep(0.15)
+        wx, wy, ww, wh = self._window
+        region = (wx, wy + _TITLE_BAR, ww, wh - _TITLE_BAR)
+        img = pyautogui.screenshot(region=region)
+        if prev and prev != "Simulator":
+            _activate_app(prev)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def _screenshot_framebuffer(self) -> bytes:
         proc = subprocess.run(
             ["xcrun", "simctl", "io", self._udid, "screenshot", "-"],
             env=_env(), capture_output=True,
@@ -294,12 +380,22 @@ class FocusFreeScreenClient:
         elif self.strategy == "ax_post":
             self._tap_ax(ax, ay)
         elif self.strategy == "sess_target_pid_restored":
+            # Explicitly activate Simulator before dispatch — the original
+            # implementation relied on click-to-front as a side effect of
+            # the PID-targeted event, which isn't reliable on the current
+            # Mac state (we hit silent non-delivery without pre-activation).
+            # Activate → dispatch → restore preserves the focus-free promise
+            # while ensuring the event reaches SwiftUI.
             prev = _frontmost_app()
+            if prev != "Simulator":
+                _activate_app("Simulator")
+                time.sleep(0.15)
             _click_quartz("sess_with_target_pid", self._sim_pid, ax, ay)
             if prev and prev != "Simulator":
                 _activate_app(prev)
         else:
             _click_quartz(self.strategy, self._sim_pid, ax, ay)
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration_ms: int = 500):
         self._refresh_window()
@@ -309,19 +405,30 @@ class FocusFreeScreenClient:
             raise NotImplementedError(f"swipe not implemented for strategy={self.strategy}")
         if self.strategy == "sess_target_pid_restored":
             prev = _frontmost_app()
+            if prev != "Simulator":
+                _activate_app("Simulator")
+                time.sleep(0.15)
             _drag_quartz("sess_with_target_pid", self._sim_pid, sx, sy, ex, ey, duration_ms / 1000.0)
             if prev and prev != "Simulator":
                 _activate_app(prev)
         else:
             _drag_quartz(self.strategy, self._sim_pid, sx, sy, ex, ey, duration_ms / 1000.0)
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def scroll(self, amount: int, x: float | None = None, y: float | None = None):
+        """Scroll via a vertical drag (NOT scroll-wheel), focus-preserving.
+
+        The iOS Simulator does not translate scroll-wheel events into iOS
+        scrolls — only drag gestures register. MirrorClient uses wheel
+        because iPhone Mirroring is the opposite. No single substrate
+        matches both. Wraps the drag in activate/restore to preserve focus.
+        """
         self._refresh_window()
         dw, dh = self._device_pts
         cx = x if x is not None else dw / 2
         cy = y if y is not None else dh / 2
-        per_click = 30
-        distance = max(40, min(dh - 100, abs(amount) * per_click))
+        per_click = 50
+        distance = max(60, min(dh - 100, abs(amount) * per_click))
         half = distance / 2
         if amount > 0:
             start, end = (cx, cy + half), (cx, cy - half)
@@ -331,13 +438,37 @@ class FocusFreeScreenClient:
         ex, ey = self._abs(end[0], end[1])
         if self.strategy in ("applescript_click", "applescript_window_click", "ax_post"):
             raise NotImplementedError(f"scroll not implemented for strategy={self.strategy}")
+        # Duration scaled to distance so velocity stays ~700 pt/s. Faster
+        # than that, the simulator treats the drag as a too-fast flick and
+        # the scroll-view ignores it. Verified with scroll_find_message.
+        drag_duration = max(0.4, distance / 700.0)
         if self.strategy == "sess_target_pid_restored":
             prev = _frontmost_app()
-            _drag_quartz("sess_with_target_pid", self._sim_pid, sx, sy, ex, ey, 0.18)
+            if prev != "Simulator":
+                _activate_app("Simulator")
+                time.sleep(0.15)
+            _drag_quartz("sess_with_target_pid", self._sim_pid, sx, sy, ex, ey, drag_duration)
             if prev and prev != "Simulator":
                 _activate_app(prev)
         else:
-            _drag_quartz(self.strategy, self._sim_pid, sx, sy, ex, ey, 0.18)
+            _drag_quartz(self.strategy, self._sim_pid, sx, sy, ex, ey, drag_duration)
+        time.sleep(_POST_ACTION_SETTLE_S)
+
+    def type_text(self, text: str):
+        """Type text into whatever has keyboard focus inside the simulator.
+
+        Briefly activates Simulator so keystrokes land there, then restores
+        the previously frontmost app — same focus-restore pattern as tap.
+        """
+        self._refresh_window()
+        prev = _frontmost_app()
+        if prev != "Simulator":
+            _activate_app("Simulator")
+            time.sleep(0.15)
+        pyautogui.typewrite(text, interval=0.02)
+        if prev and prev != "Simulator":
+            _activate_app(prev)
+        time.sleep(_POST_ACTION_SETTLE_S)
 
     def _tap_ax(self, x: float, y: float):
         # Placeholder: AXUIElement-based posting. Hard to do purely from

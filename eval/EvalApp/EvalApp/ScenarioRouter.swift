@@ -45,6 +45,14 @@ struct ScenarioRouter: View {
             FindOddOneView(config: config)
         case "count_then_tap":
             CountThenTapView(config: config)
+        case "menu_toggle_off":
+            MenuToggleOffView(config: config)
+        case "spotlight_search":
+            SpotlightSearchView(config: config)
+        case "scroll_find_message":
+            ScrollFindMessageView(config: config)
+        case "swipe_pages_find":
+            SwipePagesFindView(config: config)
         default:
             UnknownScenarioView(name: config.scenario)
         }

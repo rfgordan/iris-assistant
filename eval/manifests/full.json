@@ -1,0 +1,58 @@
+[
+  {
+    "name": "tap_target",
+    "scenario": "tap_target",
+    "prompt": "Tap the red circle.",
+    "app_timeout_s": 60,
+    "fixed": {"Size": 80, "PositionMode": "fixed", "Seed": 1, "TargetColor": "red"},
+    "sweep": {}
+  },
+  {
+    "name": "tap_with_distractors",
+    "scenario": "tap_with_distractors",
+    "prompt": "Tap the red circle. Ignore the gray ones.",
+    "app_timeout_s": 60,
+    "fixed": {"DistractorN": 3, "Size": 60, "Seed": 1, "TargetColor": "red", "DistractorColor": "gray"},
+    "sweep": {}
+  },
+  {
+    "name": "scroll_then_tap",
+    "scenario": "scroll_then_tap",
+    "prompt": "Scroll the content down until you see a red circle, then tap it.",
+    "app_timeout_s": 90,
+    "fixed": {"ScrollDistance": 500, "Size": 80, "TargetColor": "red"},
+    "sweep": {}
+  },
+  {
+    "name": "multi_step_nav",
+    "scenario": "multi_step_nav",
+    "prompt": "Tap the blue 'Continue' button to advance, then tap the red circle on the next screen.",
+    "app_timeout_s": 60,
+    "fixed": {"NavDepth": 1, "Size": 80, "TargetColor": "red"},
+    "sweep": {}
+  },
+  {
+    "name": "tap_in_order",
+    "scenario": "tap_in_order",
+    "prompt": "Tap the numbered blue circles in numerical order: 1, then 2, then 3, etc. Wrong order fails immediately.",
+    "app_timeout_s": 90,
+    "fixed": {"Count": 5, "Size": 80, "FontSize": 28, "Seed": 1},
+    "sweep": {}
+  },
+  {
+    "name": "find_odd_one",
+    "scenario": "find_odd_one",
+    "prompt": "One circle in the grid has a slightly different color than the others. Tap that circle. You have one chance.",
+    "app_timeout_s": 60,
+    "fixed": {"GridSize": 4, "OddDim": "color", "OddDelta": 0.10, "Size": 60, "Seed": 3},
+    "sweep": {}
+  },
+  {
+    "name": "count_then_tap",
+    "scenario": "count_then_tap",
+    "prompt": "Count the red circles, then tap the numbered tile at the bottom matching that count.",
+    "app_timeout_s": 60,
+    "fixed": {"NumCircles": 12, "RedCount": 5, "CircleSize": 40, "TileCount": 12, "Seed": 1},
+    "sweep": {}
+  }
+]
